@@ -64,17 +64,56 @@ struct ParticipantSecurityAttributes;
 struct EndpointSecurityAttributes;
 
 /**
+ * @brief Authentication mode for security handshake
+ * 
+ * - CLASSICAL: Traditional DH/ECDH + RSA/ECDSA
+ * - PQC_ONLY: Post-Quantum ML-KEM-768 + ML-DSA-44
+ * - HYBRID: Support both modes (future)
+ */
+enum class AuthMode
+{
+    CLASSICAL,      ///< Classical DH/ECDH + RSA/ECDSA mode
+    PQC_ONLY,       ///< Post-Quantum ML-KEM + ML-DSA mode
+    HYBRID          ///< Hybrid mode (supports both) - future
+};
+
+/**
  * Class SecurityManager used to implemente the security handshake protocol.
  *
  * @ingroup SECURITY_MODULE
  */
 class SecurityManager : private WriterListener
 {
-    static constexpr std::size_t PARTICIPANT_STATELESS_MESSAGE_PAYLOAD_DEFAULT_SIZE = 8192;
-    static constexpr std::size_t PARTICIPANT_VOLATILE_MESSAGE_PAYLOAD_DEFAULT_SIZE = 1024;
+    static constexpr std::size_t PARTICIPANT_STATELESS_MESSAGE_PAYLOAD_DEFAULT_SIZE = 32768;
+    static constexpr std::size_t PARTICIPANT_VOLATILE_MESSAGE_PAYLOAD_DEFAULT_SIZE = 32768;
 
 public:
 
+    /**
+     * @brief Detect authentication mode from IdentityToken
+     * @param identity_token The IdentityToken to check
+     * @return Detected AuthMode (PQC_ONLY, CLASSICAL, or HYBRID)
+     */
+    AuthMode detect_mode_from_identity_token(
+            const IdentityToken& identity_token);
+
+    /**
+     * @brief Detect authentication mode from participant properties
+     */
+    template<typename PropertyContainer>
+    static AuthMode detect_mode_from_properties(
+            const PropertyContainer& properties);
+    
+    static bool auth_modes_compatible(
+            AuthMode local_mode,
+            AuthMode remote_mode);
+    
+    static const char* auth_mode_to_string(
+            AuthMode mode);
+    
+    static bool is_pqc_algorithm(
+            const std::string& algorithm);
+            
     /**
      * SecurityManager constructor
      *
@@ -347,6 +386,7 @@ public:
         return temp_writer_proxies_;
     }
 
+    
 private:
 
     enum AuthenticationStatus : uint32_t
@@ -360,6 +400,14 @@ private:
         AUTHENTICATION_WAITING_FINAL,
         AUTHENTICATION_NOT_AVAILABLE
     };
+
+//     // === ADDED: Authentication mode (Classical vs PQC vs Hybrid) ===
+//     enum class AuthMode : uint32_t
+//     {
+//         CLASSICAL = 0,   // Original ECDSA + DH/ECDH
+//         PQC_ONLY,        // Only allow ML-DSA + ML-KEM
+//         HYBRID           // Allow both
+//     };
 
     struct AuthenticationHandshakeProperties
     {
@@ -821,6 +869,9 @@ private:
 
     uint32_t domain_id_ = 0;
 
+//      // === ADDED: Local participant's authentication mode ===
+//     AuthMode auth_mode_ = AuthMode::CLASSICAL;
+
     AuthenticationHandshakeProperties auth_handshake_props_;
 
     IdentityHandle* local_identity_handle_ = nullptr;
@@ -895,6 +946,10 @@ private:
      * @li (bool)*ready_state_ -> security active
      */
     std::shared_ptr<bool> ready_state_;
+
+    //! Local participant authentication mode
+    AuthMode local_auth_mode_ = AuthMode::CLASSICAL;
+
 
     mutable shared_mutex mutex_;
 

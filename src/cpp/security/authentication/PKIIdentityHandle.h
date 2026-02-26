@@ -39,6 +39,26 @@ static const char* const ECDSA_SHA256_FOR_TOKENS = "EC-prime256v1";
 static const char* const DH_2048_256 = "DH+MODP-2048-256";
 static const char* const ECDH_prime256v1 = "ECDH+prime256v1-CEUM";
 
+// PQC Algorithm Identifiers
+static const char* const MLDSA_44             = "ML-DSA-44";
+static const char* const MLKEM_768            = "ML-KEM-768";
+static const char* const MLKEM_512            = "ML-KEM-512";
+static const char* const MLDSA_44_FOR_TOKENS  = "ML-DSA-44";
+static const char* const FALCON_512           = "falcon512";
+static const char* const SPHINCS_128F         = "sphincssha2128fsimple";
+static const char* const FALCON_512_FOR_TOKENS   = "FALCON-512";
+static const char* const SPHINCS_128F_FOR_TOKENS = "SPHINCS+-SHA2-128f-simple";
+
+// PQC Signature Algorithm Type Enum
+enum class PQCSignatureAlgorithm {
+    CLASSICAL_ECDSA,
+    CLASSICAL_RSA,
+    MLDSA44,
+    FALCON512,
+    SPHINCS_128F,
+    UNKNOWN
+};
+
 class PKIIdentity
 {
 public:

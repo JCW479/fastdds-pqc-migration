@@ -41,15 +41,27 @@ endif()
 message(STATUS "Configuring DDSSecureHelloWorld example...")
 file(GLOB DDS_SECURE_HELLOWORLD_EXAMPLE_SOURCES_CXX "*.cxx")
 file(GLOB DDS_SECURE_HELLOWORLD_EXAMPLE_SOURCES_CPP "*.cpp")
+list(FILTER DDS_SECURE_HELLOWORLD_EXAMPLE_SOURCES_CPP EXCLUDE REGEX "HandshakeBenchmark.cpp")
 
 add_executable(DDSSecureHelloWorldExample ${DDS_SECURE_HELLOWORLD_EXAMPLE_SOURCES_CXX} ${DDS_SECURE_HELLOWORLD_EXAMPLE_SOURCES_CPP})
+
+add_executable(HandshakeBenchmark HandshakeBenchmark.cpp HelloWorldPublisher.cpp HelloWorldSubscriber.cpp HelloWorldPubSubTypes.cxx HelloWorld.cxx)
+
 target_compile_definitions(DDSSecureHelloWorldExample PRIVATE
     $<$<AND:$<NOT:$<BOOL:${WIN32}>>,$<STREQUAL:"${CMAKE_BUILD_TYPE}","Debug">>:__DEBUG>
     $<$<BOOL:${INTERNAL_DEBUG}>:__INTERNALDEBUG> # Internal debug activated.
     )
 target_include_directories(DDSSecureHelloWorldExample PRIVATE)
 target_link_libraries(DDSSecureHelloWorldExample fastrtps fastcdr foonathan_memory)
-install(TARGETS DDSSecureHelloWorldExample
+
+target_compile_definitions(HandshakeBenchmark PRIVATE
+    $<$<AND:$<NOT:$<BOOL:${WIN32}>>,$<STREQUAL:"${CMAKE_BUILD_TYPE}","Debug">>:__DEBUG>
+    $<$<BOOL:${INTERNAL_DEBUG}>:__INTERNALDEBUG> # Internal debug activated.
+    )
+target_include_directories(HandshakeBenchmark PRIVATE)
+target_link_libraries(HandshakeBenchmark fastrtps fastcdr foonathan_memory)
+
+install(TARGETS DDSSecureHelloWorldExample HandshakeBenchmark
     RUNTIME DESTINATION examples/cpp/dds/SecureHelloWorldExample/${BIN_INSTALL_DIR})
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/certs
     DESTINATION examples/cpp/dds/SecureHelloWorldExample/${BIN_INSTALL_DIR})
@@ -58,3 +70,4 @@ add_custom_command(TARGET DDSSecureHelloWorldExample POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${PROJECT_SOURCE_DIR}/certs
             ${PROJECT_BINARY_DIR}/certs)
+

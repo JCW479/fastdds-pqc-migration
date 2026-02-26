@@ -1414,6 +1414,21 @@ bool RTPSParticipantImpl::createWriter(
             {
                 if (is_reliable)
                 {
+                    bool force_stateless = PropertyPolicyHelper::find_property(param.endpoint.properties, "fastdds.force_stateless") != nullptr;
+                    if (force_stateless)
+                    {
+                         if (persistence != nullptr)
+                         {
+                             return new StatelessPersistentWriter(this, guid, param, payload_pool, flow_controller,
+                                            hist, listen, persistence);
+                         }
+                         else
+                         {
+                             return new StatelessWriter(this, guid, param, payload_pool, flow_controller,
+                                            hist, listen);
+                         }
+                    }
+
                     if (persistence != nullptr)
                     {
                         return new StatefulPersistentWriter(this, guid, param, payload_pool, flow_controller,

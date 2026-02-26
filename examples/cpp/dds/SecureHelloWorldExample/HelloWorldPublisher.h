@@ -31,6 +31,8 @@
 
 #include "HelloWorld.h"
 
+#include <cstdint>
+
 class HelloWorldPublisher
 {
 public:

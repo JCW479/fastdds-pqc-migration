@@ -20,6 +20,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <algorithm>
 #include <mutex>
 #include <thread>
 
@@ -44,6 +45,8 @@
 #include <fastdds/rtps/writer/StatefulWriter.h>
 #include <fastdds/rtps/writer/StatelessWriter.h>
 
+#include <fastdds/rtps/security/common/SharedSecretHandle.h>  // For DataHolderHelper
+
 #include <rtps/history/TopicPayloadPoolRegistry.hpp>
 #include <rtps/network/NetworkFactory.h>
 #include <rtps/participant/RTPSParticipantImpl.h>
@@ -61,7 +64,6 @@
 #define GMCLASSID_SECURITY_READER_CRYPTO_TOKENS "dds.sec.datareader_crypto_tokens"
 #define GMCLASSID_SECURITY_WRITER_CRYPTO_TOKENS "dds.sec.datawriter_crypto_tokens"
 
-// TODO(Ricardo) Add event because stateless messages can be not received.
 
 using namespace eprosima::fastrtps;
 using namespace eprosima::fastrtps::rtps;
@@ -397,6 +399,14 @@ bool SecurityManager::init(
     }
 
     enable_security_manager();
+
+    // Detect and set local authentication mode
+    local_auth_mode_ = detect_mode_from_properties(participant_properties);
+    
+    EPROSIMA_LOG_INFO(SECURITY, 
+        "SecurityManager initialized with authentication mode: " 
+        << auth_mode_to_string(local_auth_mode_));
+        
     return true;
 }
 
@@ -600,6 +610,34 @@ bool SecurityManager::discovered_participant(
         participant_->pdp()->notifyAboveRemoteEndpoints(participant_data, true);
         return true;
     }
+
+    // PQC/Classical Mode Compatibility Check
+    AuthMode remote_auth_mode = detect_mode_from_identity_token(participant_data.identity_token_);
+    
+    // Fallback to properties if IdentityToken doesn't have algorithm info
+    if (remote_auth_mode == AuthMode::CLASSICAL)
+    {
+        AuthMode mode_from_props = detect_mode_from_properties(participant_data.m_properties);
+        if (mode_from_props != AuthMode::CLASSICAL)
+        {
+            remote_auth_mode = mode_from_props;
+        }
+    }
+
+    if (!auth_modes_compatible(local_auth_mode_, remote_auth_mode))
+    {
+        EPROSIMA_LOG_ERROR(SECURITY, 
+            "Authentication mode incompatible with remote participant " 
+            << participant_data.m_guid 
+            << " (local: " << auth_mode_to_string(local_auth_mode_)
+            << ", remote: " << auth_mode_to_string(remote_auth_mode) << ")");
+        return false;
+    }
+    
+    EPROSIMA_LOG_INFO(SECURITY, 
+        "Remote participant " << participant_data.m_guid 
+        << " mode: " << auth_mode_to_string(remote_auth_mode)
+        << " - compatible");
 
     SecurityException exception;
     AuthenticationStatus auth_status = AUTHENTICATION_INIT;
@@ -1472,7 +1510,7 @@ void SecurityManager::process_participant_stateless_message(
 
     if (false == CDRMessage::readParticipantGenericMessage(&aux_msg, message))
     {
-        EPROSIMA_LOG_INFO(SECURITY, "Cannot deserialize ParticipantGenericMessage");
+        logInfo(SECURITY, "Cannot deserialize ParticipantGenericMessage");
         return;
     }
 
@@ -1711,7 +1749,7 @@ void SecurityManager::process_participant_volatile_message_secure(
 
     if (false == CDRMessage::readParticipantGenericMessage(&aux_msg, message))
     {
-        EPROSIMA_LOG_INFO(SECURITY, "Cannot deserialize ParticipantGenericMessage");
+        logInfo(SECURITY, "Cannot deserialize ParticipantGenericMessage");
         return;
     }
 
@@ -4419,4 +4457,254 @@ void SecurityManager::onWriterChangeReceivedByAll(
     {
         participant_volatile_message_secure_writer_history_->remove_change(change);
     }
+}
+
+
+// ============================================================================
+// PQC/Classical Mode Management Implementation
+// ============================================================================
+
+const char* SecurityManager::auth_mode_to_string(
+        AuthMode mode)
+{
+    switch (mode)
+    {
+        case AuthMode::CLASSICAL:
+            return "CLASSICAL";
+        case AuthMode::PQC_ONLY:
+            return "PQC_ONLY";
+        case AuthMode::HYBRID:
+            return "HYBRID";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+bool SecurityManager::is_pqc_algorithm(
+        const std::string& algorithm)
+{
+    // Post-Quantum Key Exchange (KEM)
+    if (algorithm.find("ML-KEM") != std::string::npos ||
+        algorithm.find("MLKEM") != std::string::npos ||
+        algorithm.find("Kyber") != std::string::npos ||
+        algorithm.find("KYBER") != std::string::npos ||
+        algorithm.find("NTRU") != std::string::npos ||
+        algorithm.find("SABER") != std::string::npos ||
+        algorithm.find("FrodoKEM") != std::string::npos ||
+        algorithm.find("BIKE") != std::string::npos ||
+        algorithm.find("HQC") != std::string::npos)
+    {
+        return true;
+    }
+    
+    // Post-Quantum Signatures
+    if (algorithm.find("ML-DSA") != std::string::npos ||
+        algorithm.find("MLDSA") != std::string::npos ||
+        algorithm.find("SLH-DSA") != std::string::npos ||
+        algorithm.find("SLHDSA") != std::string::npos ||
+        algorithm.find("Dilithium") != std::string::npos ||
+        algorithm.find("DILITHIUM") != std::string::npos ||
+        algorithm.find("SPHINCS") != std::string::npos ||
+        algorithm.find("Falcon") != std::string::npos)
+    {
+        return true;
+    }
+    
+    // Generic PQC indicators
+    if (algorithm == "PQC" || 
+        algorithm == "POST-QUANTUM" ||
+        algorithm == "QUANTUM-SAFE")
+    {
+        return true;
+    }
+    
+    // Classical algorithms (explicit check)
+    if (algorithm.find("DH") != std::string::npos ||
+        algorithm.find("RSA") != std::string::npos ||
+        algorithm.find("ECDSA") != std::string::npos ||
+        algorithm.find("DSA") != std::string::npos ||
+        algorithm == "AUTO")
+    {
+        return false;
+    }
+    
+    // Unknown: default to classical for safety
+    return false;
+}
+
+namespace {
+
+template<typename PropertyContainer>
+bool get_property_value(
+        const PropertyContainer& properties,
+        const std::string& property_name,
+        std::string& property_value)
+{
+    const std::string* property = PropertyPolicyHelper::find_property(properties, property_name);
+    if (property != nullptr)
+    {
+        property_value = *property;
+        return true;
+    }
+    return false;
+}
+
+template<>
+bool get_property_value<ParameterPropertyList_t>(
+        const ParameterPropertyList_t& properties,
+        const std::string& property_name,
+        std::string& property_value)
+{
+    auto it = std::find_if(
+        properties.begin(),
+        properties.end(),
+        [&property_name](const eprosima::fastdds::dds::ParameterProperty_t& property)
+        {
+            return property.first() == property_name;
+        });
+
+    if (it != properties.end())
+    {
+        property_value = it->second();
+        return true;
+    }
+
+    return false;
+}
+
+} // anonymous namespace
+
+AuthMode SecurityManager::detect_mode_from_identity_token(
+const IdentityToken& identity_token)
+{
+    // Extract algorithms from IdentityToken
+    const std::string* sign_algo = DataHolderHelper::find_property_value(
+    identity_token, "c.dsign_algo");
+    const std::string* kem_algo = DataHolderHelper::find_property_value(
+    identity_token, "c.kagree_algo");
+    // If both algorithms are present, check if they're PQC
+    if (sign_algo != nullptr && kem_algo != nullptr)
+    {
+        bool sign_is_pqc = is_pqc_algorithm(*sign_algo);
+        bool kem_is_pqc = is_pqc_algorithm(*kem_algo);
+
+        if (sign_is_pqc && kem_is_pqc)
+        {
+            EPROSIMA_LOG_INFO(SECURITY, 
+                "PQC mode detected from IdentityToken: sign=" << *sign_algo 
+                << ", kem=" << *kem_algo);
+            return AuthMode::PQC_ONLY;
+        }
+        else if (!sign_is_pqc && !kem_is_pqc)
+        {
+            EPROSIMA_LOG_INFO(SECURITY, 
+                "Classical mode detected from IdentityToken: sign=" << *sign_algo 
+                << ", kem=" << *kem_algo);
+            return AuthMode::CLASSICAL;
+        }
+        else
+        {
+            EPROSIMA_LOG_WARNING(SECURITY, 
+                "Hybrid algorithms detected in IdentityToken: sign=" << *sign_algo 
+                << ", kem=" << *kem_algo);
+            return AuthMode::HYBRID;
+        }
+    }
+
+    // If algorithms not in IdentityToken, return CLASSICAL as default
+    // (will be overridden by detect_mode_from_properties)
+    EPROSIMA_LOG_INFO(SECURITY, 
+        "No algorithm info in IdentityToken, will check properties");
+    return AuthMode::CLASSICAL;
+}
+
+template<typename PropertyContainer>
+AuthMode SecurityManager::detect_mode_from_properties(
+        const PropertyContainer& properties)
+{
+    std::string property_value;
+
+    // Priority 1: Explicit PQC mode flag
+    if (get_property_value(properties, "dds.sec.auth.pqc_mode", property_value))
+    {
+        if (property_value == "true" || property_value == "1" ||
+                property_value == "PQC" || property_value == "POST-QUANTUM")
+        {
+            EPROSIMA_LOG_INFO(SECURITY, "PQC mode enabled via pqc_mode");
+            return AuthMode::PQC_ONLY;
+        }
+        else if (property_value == "hybrid" || property_value == "HYBRID")
+        {
+            EPROSIMA_LOG_INFO(SECURITY, "Hybrid mode enabled via pqc_mode");
+            return AuthMode::HYBRID;
+        }
+    }
+    
+    // Priority 2: Key agreement algorithm
+    if (get_property_value(properties,
+            "dds.sec.auth.builtin.PKI-DH.preferred_key_agreement", property_value) &&
+            !property_value.empty())
+    {
+        if (is_pqc_algorithm(property_value))
+        {
+            EPROSIMA_LOG_INFO(SECURITY, 
+                "PQC mode from key_agreement: " << property_value);
+            return AuthMode::PQC_ONLY;
+        }
+        else
+        {
+            EPROSIMA_LOG_INFO(SECURITY, 
+                "Classical mode from key_agreement: " << property_value);
+            return AuthMode::CLASSICAL;
+        }
+    }
+    
+    // Priority 3: Signature algorithm
+    if (get_property_value(properties,
+            "dds.sec.auth.builtin.PKI-DH.signature_algorithm", property_value) &&
+            !property_value.empty())
+    {
+        if (is_pqc_algorithm(property_value))
+        {
+            EPROSIMA_LOG_INFO(SECURITY, 
+                "PQC mode from signature_algorithm: " << property_value);
+            return AuthMode::PQC_ONLY;
+        }
+    }
+    
+    // Default: Classical mode
+    EPROSIMA_LOG_INFO(SECURITY, "Defaulting to CLASSICAL mode");
+    return AuthMode::CLASSICAL;
+}
+
+// Template explicit instantiation
+template AuthMode SecurityManager::detect_mode_from_properties<PropertyPolicy>(
+        const PropertyPolicy& properties);
+
+template AuthMode SecurityManager::detect_mode_from_properties<ParameterPropertyList_t>(
+        const ParameterPropertyList_t& properties);
+
+bool SecurityManager::auth_modes_compatible(
+        AuthMode local_mode,
+        AuthMode remote_mode)
+{
+    // Hybrid mode is compatible with everything
+    if (local_mode == AuthMode::HYBRID || remote_mode == AuthMode::HYBRID)
+    {
+        EPROSIMA_LOG_INFO(SECURITY, "Hybrid mode - compatible");
+        return true;
+    }
+    
+    // Same modes are compatible
+    if (local_mode == remote_mode)
+    {
+        return true;
+    }
+    
+    // Different non-hybrid modes are NOT compatible
+    EPROSIMA_LOG_WARNING(SECURITY, 
+        "Auth mode mismatch: local=" << auth_mode_to_string(local_mode) 
+        << ", remote=" << auth_mode_to_string(remote_mode));
+    
+    return false;
 }

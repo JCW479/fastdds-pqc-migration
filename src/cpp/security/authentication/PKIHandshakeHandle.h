@@ -15,14 +15,20 @@
 /*!
  * @file PKIHandshakeHandle.h
  */
+
 #ifndef _SECURITY_AUTHENTICATION_PKIHANDSHAKEHANDLE_H_
 #define _SECURITY_AUTHENTICATION_PKIHANDSHAKEHANDLE_H_
 
 #include <security/authentication/PKIIdentityHandle.h>
+#include <chrono>
+
+#include <fastdds/rtps/security/common/Handle.h>
+#include <fastdds/rtps/common/Token.h>
 #include <fastdds/rtps/security/authentication/Handshake.h>
+
 #include <fastdds/rtps/security/common/SharedSecretHandle.h>
+
 #include <openssl/evp.h>
-#include <string>
 
 namespace eprosima {
 namespace fastrtps {
@@ -33,7 +39,13 @@ class PKIHandshake
 {
 public:
 
-    PKIHandshake() = default;
+    PKIHandshake()
+        : local_identity_handle_(nullptr)
+        , remote_identity_handle_(nullptr)
+        , dhkeys_(nullptr)   // Used as KEM private key (Bsk) in PQC mode
+        , peerkeys_(nullptr) // Used as KEM peer public key (Bpk) in PQC mode
+    {
+    }
 
     ~PKIHandshake()
     {
@@ -50,13 +62,19 @@ public:
 
     static const char* const class_id_;
 
-    std::string kagree_alg_;
-    EVP_PKEY* dhkeys_ = { nullptr };
-    EVP_PKEY* peerkeys_ = { nullptr };
-    const PKIIdentityHandle* local_identity_handle_ = { nullptr };
-    PKIIdentityHandle* remote_identity_handle_ = { nullptr };
+    const PKIIdentityHandle* local_identity_handle_;
+    PKIIdentityHandle* remote_identity_handle_;
+
+    EVP_PKEY* dhkeys_;   // DH/ECDH or ML-KEM private key
+    EVP_PKEY* peerkeys_; // DH/ECDH or ML-KEM peer public key
+
+    std::string kagree_alg_; // "DH+MODP-2048-256", "ECDH+prime256v1-CEUM", or "ML-KEM-768"
+
     HandshakeMessageToken handshake_message_;
+
     std::shared_ptr<SharedSecretHandle> sharedsecret_;
+
+    std::chrono::high_resolution_clock::time_point start_time_;
 };
 
 class PKIDH;
@@ -69,4 +87,3 @@ typedef HandleImpl<PKIHandshake, PKIDH> PKIHandshakeHandle;
 } //namespace eprosima
 
 #endif // _SECURITY_AUTHENTICATION_PKIHANDSHAKEHANDLE_H_
-

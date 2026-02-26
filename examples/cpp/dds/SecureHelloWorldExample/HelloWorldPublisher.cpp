@@ -18,8 +18,12 @@
  */
 
 #include "HelloWorldPublisher.h"
+
 #include <fastdds/dds/domain/DomainParticipantFactory.hpp>
 #include <fastdds/dds/subscriber/SampleInfo.hpp>
+
+#include <cstdlib>
+#include <string>
 
 using namespace eprosima::fastdds::dds;
 
@@ -37,26 +41,69 @@ bool HelloWorldPublisher::init()
     hello_.index(0);
     hello_.message("HelloWorld");
 
-    //CREATE THE PARTICIPANT
+    // CREATE THE PARTICIPANT
     DomainParticipantQos pqos;
-    pqos.properties().properties().emplace_back("dds.sec.auth.plugin",
-            "builtin.PKI-DH");
-    pqos.properties().properties().emplace_back("dds.sec.auth.builtin.PKI-DH.identity_ca",
-            "file://certs/maincacert.pem");
-    pqos.properties().properties().emplace_back("dds.sec.auth.builtin.PKI-DH.identity_certificate",
-            "file://certs/mainpubcert.pem");
-    pqos.properties().properties().emplace_back("dds.sec.auth.builtin.PKI-DH.private_key",
-            "file://certs/mainpubkey.pem");
-    pqos.properties().properties().emplace_back("dds.sec.access.plugin",
-            "builtin.Access-Permissions");
-    pqos.properties().properties().emplace_back("dds.sec.access.builtin.Access-Permissions.permissions_ca",
-            "file://certs/maincacert.pem");
-    pqos.properties().properties().emplace_back("dds.sec.access.builtin.Access-Permissions.governance",
+    DomainParticipantFactory::get_instance()->get_default_participant_qos(pqos);
+
+    // --- Decide handshake mode (dual-mode) ---
+    // FASTDDS_HANDSHAKE_MODE=PQC  -> PQC handshake + PQC identity chain
+    // otherwise                  -> classical handshake + classical identity chain
+    const char* mode_env = std::getenv("FASTDDS_HANDSHAKE_MODE");
+    const bool use_pqc = (mode_env != nullptr) && (std::string(mode_env) == "PQC");
+
+    // --- Authentication plugin (PKI-DH / your modified PKIDH lives behind this) ---
+    pqos.properties().properties().emplace_back("dds.sec.auth.plugin", "builtin.PKI-DH");
+
+    if (use_pqc)
+    {
+        // Trigger PQC handshake path in your modified PKIDH
+        pqos.properties().properties().emplace_back(
+                "dds.sec.auth.builtin.PKI-DH.preferred_key_agreement",
+                "ML-KEM-512");
+
+        // Identity chain for handshake (PQC: ML-DSA)
+        pqos.properties().properties().emplace_back(
+                "dds.sec.auth.builtin.PKI-DH.identity_ca",
+                "file://certs/auth_pqc/pqc_ca_cert.pem");
+        pqos.properties().properties().emplace_back(
+                "dds.sec.auth.builtin.PKI-DH.identity_certificate",
+                "file://certs/auth_pqc/pub_cert.pem");
+        pqos.properties().properties().emplace_back(
+                "dds.sec.auth.builtin.PKI-DH.private_key",
+                "file://certs/auth_pqc/pub_key.pem");
+    }
+    else
+    {
+        // Classical identity chain for handshake (stock PKI-DH)
+        pqos.properties().properties().emplace_back(
+                "dds.sec.auth.builtin.PKI-DH.identity_ca",
+                "file://certs/auth_classical/maincacert.pem");
+        pqos.properties().properties().emplace_back(
+                "dds.sec.auth.builtin.PKI-DH.identity_certificate",
+                "file://certs/auth_classical/mainpubcert.pem");
+        pqos.properties().properties().emplace_back(
+                "dds.sec.auth.builtin.PKI-DH.private_key",
+                "file://certs/auth_classical/mainpubkey.pem");
+    }
+
+    // --- AccessControl plugin (A-plan: keep classical CMS) ---
+    pqos.properties().properties().emplace_back("dds.sec.access.plugin", "builtin.Access-Permissions");
+
+    // CA used to validate governance/permissions CMS signatures
+    pqos.properties().properties().emplace_back(
+        "dds.sec.access.builtin.Access-Permissions.permissions_ca",
+        "file://certs/maincacert.pem");
+
+    pqos.properties().properties().emplace_back(
+            "dds.sec.access.builtin.Access-Permissions.governance",
             "file://certs/governance.smime");
-    pqos.properties().properties().emplace_back("dds.sec.access.builtin.Access-Permissions.permissions",
+
+    pqos.properties().properties().emplace_back(
+            "dds.sec.access.builtin.Access-Permissions.permissions",
             "file://certs/permissions.smime");
-    pqos.properties().properties().emplace_back("dds.sec.crypto.plugin",
-            "builtin.AES-GCM-GMAC");
+
+    // --- Crypto plugin (AES-GCM-GMAC) ---
+    pqos.properties().properties().emplace_back("dds.sec.crypto.plugin", "builtin.AES-GCM-GMAC");
 
     participant_ = DomainParticipantFactory::get_instance()->create_participant(0, pqos);
 
@@ -65,10 +112,10 @@ bool HelloWorldPublisher::init()
         return false;
     }
 
-    //REGISTER THE TYPE
+    // REGISTER THE TYPE
     type_.register_type(participant_);
 
-    //CREATE THE PUBLISHER
+    // CREATE THE PUBLISHER
     publisher_ = participant_->create_publisher(PUBLISHER_QOS_DEFAULT);
 
     if (publisher_ == nullptr)
@@ -76,7 +123,7 @@ bool HelloWorldPublisher::init()
         return false;
     }
 
-    //CREATE THE TOPIC
+    // CREATE THE TOPIC
     topic_ = participant_->create_topic("HelloWorldTopic", "HelloWorld", TOPIC_QOS_DEFAULT);
 
     if (topic_ == nullptr)
@@ -84,7 +131,7 @@ bool HelloWorldPublisher::init()
         return false;
     }
 
-    //CREATE THE DATAWRITER
+    // CREATE THE DATAWRITER
     DataWriterQos wqos;
     wqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
     wqos.history().kind = KEEP_LAST_HISTORY_QOS;
@@ -93,6 +140,7 @@ bool HelloWorldPublisher::init()
     wqos.resource_limits().max_samples_per_instance = 20;
     wqos.reliable_writer_qos().times.heartbeatPeriod.seconds = 2;
     wqos.reliable_writer_qos().times.heartbeatPeriod.nanosec = 200 * 1000 * 1000;
+
     writer_ = publisher_->create_datawriter(topic_, wqos, &listener_);
 
     if (writer_ == nullptr)
@@ -101,7 +149,6 @@ bool HelloWorldPublisher::init()
     }
 
     return true;
-
 }
 
 HelloWorldPublisher::~HelloWorldPublisher()

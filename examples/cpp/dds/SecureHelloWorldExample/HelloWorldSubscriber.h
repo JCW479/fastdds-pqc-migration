@@ -30,6 +30,8 @@
 
 #include "HelloWorld.h"
 
+#include <cstdint>
+
 class HelloWorldSubscriber
 {
 public:
